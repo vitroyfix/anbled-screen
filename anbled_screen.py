@@ -39,7 +39,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 WINDOWS = os.name == "nt"
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 NAME = os.environ.get("ANBLED_SCREEN_NAME", "Anbled screen (Windows)" if WINDOWS else "Anbled screen (Linux)")
 HTTP_PORT = int(os.environ.get("ANBLED_SCREEN_PORT", "49494"))
 VLC_PORT = 49495
@@ -606,7 +606,12 @@ class Handler(BaseHTTPRequestHandler):
     def AVTransport_SetAVTransportURI(self, body):
         uri, sender = arg(body, "CurrentURI"), self.client_address[0]
         if not playable(uri, sender):
-            log(f"refused an address from {sender}")
+            try:
+                pointed = urllib.parse.urlsplit(uri).hostname or uri[:40]
+            except ValueError:
+                pointed = uri[:40]
+            log(f"refused an address from {sender}: it pointed to {pointed}, not to the phone itself"
+                " (a hotspot, Wi-Fi Direct or VPN on the phone can cause this)")
             return None
         self.player.set_uri(uri, arg(body, "CurrentURIMetaData"), sender)
         return {}
