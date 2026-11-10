@@ -1,0 +1,52 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Smoke test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -I tests/smoke_test.py
+
+  windows-install:
+    name: Windows install and real cast
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install VLC
+        run: choco install vlc -y --no-progress
+      - name: Install Anbled Screen
+        shell: pwsh
+        run: ./windows/install.ps1 -Quiet -NoStart
+      - name: Cast to it with real VLC
+        run: python -I tests/cast_test.py "$env:LOCALAPPDATA\Programs\Anbled Screen\anbled_screen.py"
+      - name: Uninstall
+        if: always()
+        shell: pwsh
+        run: ./windows/install.ps1 -Uninstall -Quiet
+      - name: Nothing left behind
+        shell: pwsh
+        run: |
+          Start-Sleep 5
+          if (Test-Path "$env:LOCALAPPDATA\Programs\Anbled Screen\anbled_screen.py") { throw "files left behind" }
+          if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AnbledScreen') { throw "Apps entry left behind" }

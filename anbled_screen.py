@@ -11,13 +11,17 @@ only plays what a phone on the same Wi-Fi sends.
     python3 anbled_screen.py            run in the foreground (Ctrl+C stops it)
     ANBLED_SCREEN_NAME="Living room"    the name phones show (default "Anbled screen (Linux)")
 
-Standard library only. Phones find it on UDP 1900, which Fedora's firewall closes until "ssdp" is allowed.
+Runs on Linux and Windows. On Windows, the Start menu shortcuts use:
+    pythonw anbled_screen.py --start | --stop | --status | --autostart | --no-autostart
+
+Standard library only. Phones find it on UDP 1900 (SSDP) and control it on TCP 49494: a firewall must let both in.
 """
 import base64
 import html
 import ipaddress
 import json
 import os
+import platform
 import pathlib
 import re
 import secrets
@@ -34,15 +38,25 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-NAME = os.environ.get("ANBLED_SCREEN_NAME", "Anbled screen (Linux)")
+WINDOWS = os.name == "nt"
+VERSION = "1.1.0"
+NAME = os.environ.get("ANBLED_SCREEN_NAME", "Anbled screen (Windows)" if WINDOWS else "Anbled screen (Linux)")
 HTTP_PORT = int(os.environ.get("ANBLED_SCREEN_PORT", "49494"))
 VLC_PORT = 49495
 DEBUG_LOG = os.environ.get("ANBLED_SCREEN_LOG", "")  # a file: VLC's own messages go there (for finding problems)
 SSDP_ADDR, SSDP_PORT = "239.255.255.250", 1900
-CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "anbled-screen")
+if WINDOWS:
+    CACHE_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Anbled Screen", "cache")
+else:
+    CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "anbled-screen")
 # Where song pictures may come from (Anbled's covers are on Google's image servers).
 COVER_HOSTS = ("googleusercontent.com", "ggpht.com", "ytimg.com", "anbled.com")
-STATE_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "anbled-screen")
+if WINDOWS:
+    STATE_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "Anbled Screen")
+else:
+    STATE_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "anbled-screen")
+PID_FILE = os.path.join(STATE_DIR, "running.pid")
+LOG_FILE = os.path.join(STATE_DIR, "anbled-screen.log")  # (Windows, started without a console: where log() writes)
 
 DEVICE = "urn:schemas-upnp-org:device:MediaRenderer:1"
 SERVICES = {
@@ -53,7 +67,18 @@ SERVICES = {
 
 
 def log(msg):
-    print(time.strftime("%H:%M:%S"), msg, flush=True)
+    line = f"{time.strftime('%H:%M:%S')} {msg}"
+    if sys.stdout is not None:
+        print(line, flush=True)
+        return
+    try:  # no console (pythonw on Windows): a small log file instead
+        os.makedirs(STATE_DIR, exist_ok=True)
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 1_000_000:
+            os.replace(LOG_FILE, LOG_FILE + ".old")
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d ") + line + "\n")
+    except OSError:
+        pass
 
 
 def lan_ip():
@@ -87,12 +112,43 @@ UDN = "uuid:" + device_uuid()
 
 
 # ---------- VLC ----------
-def vlc_command():
-    if shutil.which("flatpak") and subprocess.run(["flatpak", "info", "org.videolan.VLC"], capture_output=True).returncode == 0:
+def find_vlc():
+    """How to start VLC here, or None. ANBLED_SCREEN_VLC can name the program."""
+    named = os.environ.get("ANBLED_SCREEN_VLC")
+    if named and os.path.isfile(named):
+        return [named]
+    if WINDOWS:
+        import winreg
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            for key in (r"SOFTWARE\VideoLAN\VLC", r"SOFTWARE\WOW6432Node\VideoLAN\VLC"):
+                try:
+                    with winreg.OpenKey(root, key) as k:
+                        for name in ("", "InstallDir"):
+                            try:
+                                value = winreg.QueryValueEx(k, name)[0]
+                            except OSError:
+                                continue
+                            exe = value if value.lower().endswith(".exe") else os.path.join(value, "vlc.exe")
+                            if os.path.isfile(exe):
+                                return [exe]
+                except OSError:
+                    pass
+        for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"), os.environ.get("LOCALAPPDATA")):
+            exe = os.path.join(base or "", "VideoLAN", "VLC", "vlc.exe")
+            if base and os.path.isfile(exe):
+                return [exe]
+    elif shutil.which("flatpak") and subprocess.run(["flatpak", "info", "org.videolan.VLC"], capture_output=True).returncode == 0:
         return ["flatpak", "run", "org.videolan.VLC"]
-    if shutil.which("vlc"):
-        return ["vlc"]
-    sys.exit("VLC isn't installed: flatpak install flathub org.videolan.VLC")
+    found = shutil.which("vlc")
+    return [found] if found else None
+
+
+def vlc_command():
+    command = find_vlc()
+    if command:
+        return command
+    log("VLC isn't installed")
+    sys.exit("VLC isn't installed: " + ("winget install VideoLAN.VLC" if WINDOWS else "flatpak install flathub org.videolan.VLC"))
 
 
 class Vlc:
@@ -115,7 +171,8 @@ class Vlc:
                              "--fullscreen" if fullscreen else "--no-fullscreen", "--network-caching", "1500"]
             + (["-vv"] if DEBUG_LOG else []) + ["--", playlist],  # a file this program wrote, never a network address
             stdin=subprocess.DEVNULL, stdout=open(DEBUG_LOG, "ab") if DEBUG_LOG else subprocess.DEVNULL,
-            stderr=subprocess.STDOUT if DEBUG_LOG else subprocess.DEVNULL, start_new_session=True)
+            stderr=subprocess.STDOUT if DEBUG_LOG else subprocess.DEVNULL,
+            **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {"start_new_session": True}))
         self.volume_set = False
 
     def alive(self):
@@ -142,7 +199,13 @@ class Vlc:
         self.status(command="in_play", input=pathlib.Path(playlist).as_uri())
 
     def close(self):
-        if self.alive():
+        if self.alive() and WINDOWS:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=3)
+            except Exception:
+                pass
+        elif self.alive():
             try:
                 os.killpg(self.proc.pid, signal.SIGTERM)
                 self.proc.wait(timeout=3)
@@ -470,6 +533,16 @@ def arg(body, name):
     return html.unescape(m.group(1).strip()) if m else ""
 
 
+class Server(ThreadingHTTPServer):
+    # On Windows, "reuse" would let a second copy take the same port: there it's exclusive instead.
+    allow_reuse_address = not WINDOWS
+
+    def server_bind(self):
+        if WINDOWS and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 # ---------- the web side: descriptions and control ----------
 class Handler(BaseHTTPRequestHandler):
     server_version = "AnbledScreen/1"
@@ -626,8 +699,11 @@ def usn(target):
 
 def ssdp(ip, stop):
     location = f"http://{ip}:{HTTP_PORT}/description.xml"
-    server = "Linux UPnP/1.0 AnbledScreen/1"
+    server = f"{platform.system() or 'Linux'} UPnP/1.0 AnbledScreen/1"
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    if WINDOWS and hasattr(socket, "SIO_UDP_CONNRESET"):
+        # Windows otherwise fails the next receive after an answer to a phone that's gone, ending discovery.
+        sock.ioctl(socket.SIO_UDP_CONNRESET, False)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     if hasattr(socket, "SO_REUSEPORT"):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
@@ -655,10 +731,13 @@ def ssdp(ip, stop):
             next_alive = time.time() + 60
         try:
             data, addr = sock.recvfrom(4096)
-        except socket.timeout:
+        except (socket.timeout, ConnectionResetError):
             continue
         except OSError:
-            break
+            if stop.is_set():
+                break
+            time.sleep(1)  # the network changed for a moment: keep answering
+            continue
         text = data.decode("utf-8", "replace")
         if not text.startswith("M-SEARCH"):
             continue
@@ -681,13 +760,106 @@ def ssdp(ip, stop):
     sock.close()
 
 
+# ---------- Windows: on, off and start at sign-in (Linux uses the anbled-screen script and systemd) ----------
+def _running_pid():
+    """The process id of an Anbled Screen already serving here, or None."""
+    try:
+        with open(PID_FILE) as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        with urllib.request.urlopen(f"http://{lan_ip()}:{HTTP_PORT}/description.xml", timeout=2) as r:
+            if UDN.encode() in r.read():
+                return pid
+    except Exception:
+        pass
+    return None
+
+
+def _message(text):
+    """Printed in a terminal; a small window when started from a Start menu shortcut (no terminal)."""
+    if sys.stdout is not None:
+        print(text)
+        return
+    if WINDOWS:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, text, "Anbled Screen", 0x40)
+
+
+def _pythonw():
+    exe = sys.executable
+    quiet = os.path.join(os.path.dirname(exe), "pythonw.exe")
+    return quiet if os.path.isfile(quiet) else exe
+
+
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def windows_command(command):
+    script = os.path.abspath(__file__)
+    if command == "--start":
+        if _running_pid():
+            return _message("Anbled Screen is already on.\n\nIn Anbled, tap Cast and choose this computer.")
+        if not find_vlc():
+            return _message("VLC is needed to play what's cast.\n\nInstall it from videolan.org, or run:\nwinget install VideoLAN.VLC")
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        subprocess.Popen([_pythonw(), script], creationflags=flags, close_fds=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(20):
+            time.sleep(0.5)
+            if _running_pid():
+                return _message(f"Anbled Screen is on ({lan_ip()}).\n\nIn Anbled, tap Cast and choose this computer. "
+                                "The phone must be on the same Wi-Fi.")
+        return _message(f"Anbled Screen couldn't start.\n\nSee the log: {LOG_FILE}")
+    if command == "--stop":
+        pid = _running_pid()
+        if pid:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        return _message("Anbled Screen is off." if pid else "Anbled Screen wasn't on.")
+    if command == "--status":
+        print(f"on ({lan_ip()}:{HTTP_PORT})" if _running_pid() else "off")
+        return
+    if command in ("--autostart", "--no-autostart"):
+        import winreg
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
+            if command == "--autostart":
+                winreg.SetValueEx(k, "Anbled Screen", 0, winreg.REG_SZ, f'"{_pythonw()}" "{script}"')
+            else:
+                try:
+                    winreg.DeleteValue(k, "Anbled Screen")
+                except OSError:
+                    pass
+        print("Anbled Screen " + ("starts" if command == "--autostart" else "won't start") + " when you sign in.")
+        return
+    sys.exit(f"Unknown command: {command} (use --start, --stop, --status, --autostart or --no-autostart)")
+
+
 def main():
+    if sys.argv[1:] == ["--version"]:
+        return print(VERSION)
+    if len(sys.argv) > 1:
+        if not WINDOWS:
+            sys.exit("On Linux, use the anbled-screen command (on, off, status, logs, autostart).")
+        return windows_command(sys.argv[1])
+    serve()
+
+
+def serve():
     ip = lan_ip()
     vlc_command()  # says so now if VLC isn't installed
     Handler.player = Player()
     Handler.ip = ip
-    httpd = ThreadingHTTPServer((ip, HTTP_PORT), Handler)
+    try:
+        httpd = Server((ip, HTTP_PORT), Handler)
+    except OSError as e:
+        log(f"port {HTTP_PORT} is taken (is Anbled Screen already on?): {e}")
+        sys.exit(1)
     httpd.daemon_threads = True
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
     stop = threading.Event()
 
     def shutdown(*_):
@@ -705,6 +877,10 @@ def main():
         stop.set()
         finder.join(timeout=3)
         Handler.player.close()
+        try:
+            os.remove(PID_FILE)
+        except OSError:
+            pass
         log("stopped")
 
 
