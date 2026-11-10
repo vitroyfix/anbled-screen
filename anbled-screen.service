@@ -1,0 +1,11 @@
+[Unit]
+Description=Anbled Screen: a cast receiver for the Anbled app (videos full screen)
+After=graphical-session.target network-online.target
+
+[Service]
+ExecStart=/usr/bin/env python3 -I %h/.local/share/anbled-screen/anbled_screen.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Anbled Screen: a cast receiver. Makes this computer a screen the Anbled app can cast songs and videos to.
+#
+#   anbled-screen                 turn it on
+#   anbled-screen off             turn it off
+#   anbled-screen status          is it on, and on which address
+#   anbled-screen logs            what it has been doing
+#   anbled-screen autostart       start it at every login
+#   anbled-screen no-autostart    don't start it at login
+#
+# Phones find it with SSDP (UDP 1900) and control it over TCP 49494. If the computer has a firewall that blocks
+# them (firewalld on Fedora/openSUSE/RHEL, ufw on Ubuntu/Mint), the first start asks for your password once.
+set -u
+
+UNIT=anbled-screen.service
+PORT="${ANBLED_SCREEN_PORT:-49494}"
+AUTOSTART="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/anbled-screen.desktop"
+
+say() {
+  if command -v notify-send >/dev/null 2>&1 && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+    notify-send -a "Anbled Screen" -i anbled-screen "$1" "${2:-}" 2>/dev/null
+  fi
+  printf '%s%s\n' "$1" "${2:+: $2}"
+}
+
+lan_ip() { ip -4 route get 1.1.1.1 2>/dev/null | sed -nE 's/.* src ([0-9.]+).*/\1/p'; }
+
+# Runs a command as root: sudo in a terminal, a password dialog on the desktop.
+as_root() {
+  if [ -t 0 ] && command -v sudo >/dev/null 2>&1; then sudo "$@"
+  elif command -v pkexec >/dev/null 2>&1; then pkexec "$@"
+  else return 1
+  fi
+}
+
+open_firewall() {
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    if ! firewall-cmd --query-service=ssdp >/dev/null 2>&1 || ! firewall-cmd --query-port="$PORT/tcp" >/dev/null 2>&1; then
+      as_root /bin/sh -c "firewall-cmd --permanent --add-service=ssdp && firewall-cmd --permanent --add-port=$PORT/tcp && firewall-cmd --reload" >/dev/null 2>&1 \
+        || say "Phones may not find this screen" "The firewall stayed closed. Run anbled-screen again to retry."
+    fi
+  elif command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null | grep -q "Status: active"; then
+    if ! LC_ALL=C ufw status 2>/dev/null | grep -q "1900/udp"; then
+      as_root /bin/sh -c "ufw allow 1900/udp comment 'Anbled Screen' && ufw allow $PORT/tcp comment 'Anbled Screen'" >/dev/null 2>&1 \
+        || say "Phones may not find this screen" "The firewall stayed closed. Run anbled-screen again to retry."
+    fi
+  fi
+  # No firewall manager running: nothing to open.
+}
+
+case "${1:-on}" in
+  off|stop)
+    systemctl --user stop "$UNIT"
+    say "Anbled Screen is off" "Phones can't cast to this computer until you open Anbled Screen again."
+    exit 0;;
+  status)
+    if systemctl --user is-active --quiet "$UNIT"; then echo "on ($(lan_ip):$PORT)"; else echo "off"; fi
+    exit 0;;
+  logs)
+    exec journalctl --user -u "$UNIT" -n 50 --no-pager;;
+  autostart)
+    mkdir -p "$(dirname "$AUTOSTART")"
+    cat > "$AUTOSTART" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Anbled Screen
+Comment=Let the Anbled app cast to this computer
+Exec=$HOME/.local/bin/anbled-screen quiet
+Icon=anbled-screen
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+DESKTOP
+    say "Anbled Screen starts at login" "Turn it off with: anbled-screen no-autostart"
+    exit 0;;
+  no-autostart)
+    rm -f "$AUTOSTART"
+    systemctl --user disable "$UNIT" >/dev/null 2>&1  # (earlier versions started it this way)
+    say "Anbled Screen won't start at login" ""
+    exit 0;;
+  on|start|quiet) ;;
+  -h|--help|help)
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0;;
+  *)
+    echo "Unknown command: $1 (try: anbled-screen help)" >&2
+    exit 2;;
+esac
+
+open_firewall
+# The service needs the desktop session's display to show videos full screen (GNOME passes it on by itself; other
+# desktops may not).
+systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS 2>/dev/null
+# Rygel (another DLNA receiver) would show up as a second screen.
+systemctl --user stop rygel.service 2>/dev/null
+systemctl --user restart "$UNIT"
+sleep 3
+if systemctl --user is-active --quiet "$UNIT"; then
+  ip=$(lan_ip)
+  [ "${1:-}" = quiet ] || say "Anbled Screen is on" "In Anbled, tap Cast and choose this computer. Same Wi-Fi${ip:+ ($ip)}."
+else
+  say "Anbled Screen couldn't start" "See: anbled-screen logs"
+  exit 1
+fi
