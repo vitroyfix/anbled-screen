@@ -4,12 +4,14 @@
 
 # Anbled Screen
 
-**Cast songs and videos from the Anbled app to your Linux computer.**
+**Cast songs and videos from the Anbled app to your Linux or Windows computer.**
 
-Anbled Screen makes your Linux computer a cast receiver. It shows up in the Anbled app's **Cast** list just like a
-smart TV. What you cast opens in a real player window, with the cover, title and controls, on your bigger screen.
+Anbled Screen makes your computer a cast receiver. It shows up in the Anbled app's **Cast** list just like a smart
+TV. What you cast opens in a real player window, with the cover, title and controls, on your bigger screen.
 
-[![Platform](https://img.shields.io/badge/platform-Linux-1a73e8?logo=linux&logoColor=white)](#requirements)
+[![Test](https://github.com/vitroyfix/anbled-screen/actions/workflows/test.yml/badge.svg)](https://github.com/vitroyfix/anbled-screen/actions/workflows/test.yml)
+[![Linux](https://img.shields.io/badge/Linux-supported-1a73e8?logo=linux&logoColor=white)](#linux)
+[![Windows](https://img.shields.io/badge/Windows%2010%20%7C%2011-supported-1a73e8?logo=windows&logoColor=white)](#windows)
 [![Python](https://img.shields.io/badge/python-3.9%2B-1a73e8?logo=python&logoColor=white)](#requirements)
 [![Protocol](https://img.shields.io/badge/protocol-UPnP%20%2F%20DLNA-34a853)](#how-it-works)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-34a853)](#requirements)
@@ -27,9 +29,9 @@ smart TV. What you cast opens in a real player window, with the cover, title and
 ## Overview
 
 The [Anbled](https://anbled.com) Android app can cast to Chromecast devices and smart TVs. Anbled Screen adds
-your Linux computer to that list. Pick it in the app, and what you're playing moves to the computer. Your phone
-stays the remote control for play, pause, seek, volume and skipping songs, and the computer gets a full player
-window with the same controls.
+your computer to that list. Pick it in the app, and what you're playing moves to the computer. Your phone stays the
+remote control for play, pause, seek, volume and skipping songs, and the computer gets a full player window with
+the same controls.
 
 | | |
 |---|---|
@@ -39,31 +41,39 @@ window with the same controls.
 | 📡 **Found automatically** | No addresses or pairing codes. Phones on the same Wi-Fi find it on their own. |
 | 🪶 **Lightweight** | One Python file, standard library only, playback by [VLC](https://www.videolan.org/vlc/). |
 | 🔒 **Local only** | Only phones on your home network can control it, and it plays only what the casting phone itself serves. |
-| 🐧 **Any distribution** | Fedora, Ubuntu, Debian, Mint, Arch, openSUSE and others with systemd. |
+| 💻 **Linux and Windows** | Fedora, Ubuntu, Debian, Mint, Arch, openSUSE and other systemd distributions, plus Windows 10 and 11. |
 
 ## Quick start
+
+**Linux** (in a terminal):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vitroyfix/anbled-screen/main/install.sh | bash
 anbled-screen
 ```
 
+**Windows** (in PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/vitroyfix/anbled-screen/main/windows/install.ps1 | iex
+```
+
 Then, on your phone:
 
 1. Connect to the **same Wi-Fi** as the computer.
 2. Open **Anbled** and play something.
-3. Tap **Cast** and choose **Anbled screen (Linux)**.
+3. Tap **Cast** and choose **Anbled screen (Linux)** or **Anbled screen (Windows)**.
 
 ## Requirements
 
-| Requirement | Notes |
-|---|---|
-| **Linux with systemd** | Almost every desktop distribution. Runs as a per-user service, so it needs no root. |
-| **Python 3.9 or newer** | Already installed on all current distributions. |
-| **VLC** | The distribution's package or the Flatpak (`org.videolan.VLC`). The Flatpak is used when both are installed. |
-| **Same network** | The phone and the computer must be on the same Wi-Fi or LAN. |
+| Requirement | Linux | Windows |
+|---|---|---|
+| **System** | Any distribution with systemd | Windows 10 or 11 |
+| **Python 3.9+** | Already installed on all current distributions | Installed for you with winget if missing |
+| **VLC** | Your distribution's package or the Flatpak (see below) | Installed for you with winget if missing |
+| **Network** | Same Wi-Fi or LAN as the phone | Same Wi-Fi or LAN as the phone, set to a **Private** network |
 
-Install VLC if you don't have it:
+Install VLC on Linux if you don't have it:
 
 | Distribution | Command |
 |---|---|
@@ -75,25 +85,16 @@ Install VLC if you don't have it:
 
 ## Installation
 
-### One-line install (recommended)
+### Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vitroyfix/anbled-screen/main/install.sh | bash
 ```
 
 No `curl`? Use `wget -qO- https://raw.githubusercontent.com/vitroyfix/anbled-screen/main/install.sh | bash`.
+To install from a clone instead, run `./install.sh` in it.
 
-### From source
-
-```bash
-git clone https://github.com/vitroyfix/anbled-screen.git
-cd anbled-screen
-./install.sh
-```
-
-### What gets installed
-
-Everything goes in your home folder. Nothing is installed system-wide.
+Everything goes in your home folder. Nothing is installed system-wide:
 
 | File | Purpose |
 |---|---|
@@ -102,19 +103,40 @@ Everything goes in your home folder. Nothing is installed system-wide.
 | `~/.config/systemd/user/anbled-screen.service` | Keeps it running in the background |
 | `~/.local/share/applications/anbled-screen.desktop` | The entry in your applications menu |
 
+### Windows
+
+Open **PowerShell** (Start menu → type *PowerShell*) and run:
+
+```powershell
+irm https://raw.githubusercontent.com/vitroyfix/anbled-screen/main/windows/install.ps1 | iex
+```
+
+The installer:
+
+1. Finds **Python** and **VLC**, and installs them with winget if they're missing.
+2. Installs Anbled Screen for your user in `%LOCALAPPDATA%\Programs\Anbled Screen`.
+3. Adds **Anbled Screen** and **Turn off Anbled Screen** to the Start menu, and an entry under
+   **Settings → Apps** for uninstalling.
+4. Lets phones on **private** networks reach it through Windows Firewall (one administrator prompt).
+5. Asks whether to start it every time you sign in, and then turns it on.
+
+To install from a clone instead, run `.\windows\install.ps1` in it. The options are `-Autostart`, `-NoStart` and
+`-Quiet`.
+
 ### Updating
 
-Run the install command again. If Anbled Screen is running, the new version takes over straight away.
+Run the install command again. The new version takes over straight away.
 
 ### Uninstalling
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/vitroyfix/anbled-screen/main/install.sh | bash -s -- --uninstall
-```
+- **Linux:** `curl -fsSL https://raw.githubusercontent.com/vitroyfix/anbled-screen/main/install.sh | bash -s -- --uninstall`
+- **Windows:** **Settings → Apps → Installed apps → Anbled Screen → Uninstall**, or `.\windows\install.ps1 -Uninstall`
 
-Or, from a clone, run `./install.sh --uninstall`.
+Python and VLC are left installed.
 
 ## Usage
+
+### Linux
 
 Open **Anbled Screen** from your applications menu, or use the terminal:
 
@@ -132,24 +154,36 @@ You can also right-click the menu entry to turn it off or to start it at login.
 > [!NOTE]
 > The first time you turn it on, you may be asked for your password once. If your computer runs a firewall
 > (**firewalld** on Fedora, openSUSE and RHEL, or **ufw** on Ubuntu and Mint), that's needed to let phones find it.
-> See [Network and firewall](#network-and-firewall).
+
+### Windows
+
+Use the Start menu: **Anbled Screen** turns it on and **Turn off Anbled Screen** turns it off. It runs in the
+background with no window until something is cast.
+
+To use a terminal instead, run these in `%LOCALAPPDATA%\Programs\Anbled Screen`:
+
+| Command | What it does |
+|---|---|
+| `python anbled_screen.py --start` | Turn it on |
+| `python anbled_screen.py --stop` | Turn it off |
+| `python anbled_screen.py --status` | Show whether it's on, and on which address |
+| `python anbled_screen.py --autostart` | Start it every time you sign in |
+| `python anbled_screen.py --no-autostart` | Stop starting it at sign-in |
+
+The log is in `%APPDATA%\Anbled Screen\anbled-screen.log`.
 
 ### Configuration
 
-To change a setting, run `systemctl --user edit anbled-screen` and add the setting under `[Service]`:
-
-```ini
-[Service]
-Environment=ANBLED_SCREEN_NAME=Living room
-```
-
-Then run `anbled-screen` again to apply it.
-
 | Variable | Default | Description |
 |---|---|---|
-| `ANBLED_SCREEN_NAME` | `Anbled screen (Linux)` | The name phones show in the Cast list |
+| `ANBLED_SCREEN_NAME` | `Anbled screen (Linux)` / `(Windows)` | The name phones show in the Cast list |
 | `ANBLED_SCREEN_PORT` | `49494` | TCP port for control messages (if you change it, open the new port in your firewall) |
+| `ANBLED_SCREEN_VLC` | *(found automatically)* | The VLC program to use |
 | `ANBLED_SCREEN_LOG` | *(off)* | A file path that VLC's own log is written to, for finding problems |
+
+- **Linux:** run `systemctl --user edit anbled-screen`, add `Environment=ANBLED_SCREEN_NAME=Living room` under
+  `[Service]`, then run `anbled-screen` again.
+- **Windows:** run `setx ANBLED_SCREEN_NAME "Living room"`, then turn Anbled Screen off and on again.
 
 ## How it works
 
@@ -189,13 +223,13 @@ sequenceDiagram
 Anbled Screen is designed to be safe to leave running on a home network:
 
 - **Local network only.** It ignores control requests from addresses outside private, link-local and loopback
-  ranges.
+  ranges. On Windows, the firewall rules apply only to private networks.
 - **Plays only what the casting phone serves.** A play request is accepted only for an `http(s)` link whose host is
   the phone that sent it. Local files, other computers and anything VLC might read as a command-line option are
-  refused. VLC is also started with `--` before the link, as a second safeguard.
+  refused. VLC is given a playlist file Anbled Screen wrote itself, after `--`, never a raw network address.
 - **Cast links stay private.** The link being played is shown only to the phone that cast it. Other devices asking
   what's playing get an empty answer.
-- **No root, no system changes.** It runs as your user. The only system change is the optional firewall opening.
+- **No administrator rights to run.** It runs as your user. The only system change is the firewall opening.
 - **Limited input.** Control requests larger than 256 KB are refused.
 - **Covers from known places only.** Song pictures are downloaded only over https from Anbled's image hosts, as
   images of at most 5 MB, with no redirects.
@@ -210,17 +244,23 @@ Found a security problem? Please report it privately to the maintainer rather th
 | `1900` | UDP (multicast `239.255.255.250`) | Discovery (SSDP) |
 | `49494` | TCP | Device description and playback control |
 
-`anbled-screen` opens these for you on **firewalld** and **ufw**. To open them yourself:
+The installers open these for you. To open them yourself:
 
 ```bash
-# firewalld (Fedora, openSUSE, RHEL)
+# Linux, firewalld (Fedora, openSUSE, RHEL)
 sudo firewall-cmd --permanent --add-service=ssdp
 sudo firewall-cmd --permanent --add-port=49494/tcp
 sudo firewall-cmd --reload
 
-# ufw (Ubuntu, Mint)
+# Linux, ufw (Ubuntu, Mint)
 sudo ufw allow 1900/udp
 sudo ufw allow 49494/tcp
+```
+
+```powershell
+# Windows (PowerShell as administrator)
+New-NetFirewallRule -DisplayName 'Anbled Screen (discovery)' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 1900 -Profile Private,Domain
+New-NetFirewallRule -DisplayName 'Anbled Screen (control)' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 49494 -Profile Private,Domain
 ```
 
 ## Troubleshooting
@@ -230,8 +270,10 @@ sudo ufw allow 49494/tcp
 
 - Make sure the phone and the computer are on the **same Wi-Fi**. A guest network often blocks devices from seeing
   each other.
-- Check it's running: `anbled-screen status`.
+- Check that it's on: `anbled-screen status` on Linux, or `python anbled_screen.py --status` on Windows.
 - Check that the firewall allows UDP 1900 and TCP 49494 (see [Network and firewall](#network-and-firewall)).
+- **Windows:** your Wi-Fi must be a **Private** network. Go to **Settings → Network & internet → Wi-Fi →**
+  *(your network)* and choose **Private network**.
 - Some routers block multicast. Look for a setting such as *AP isolation*, *client isolation* or
   *IGMP snooping* and turn it off.
 
@@ -240,15 +282,16 @@ sudo ufw allow 49494/tcp
 <details>
 <summary><b>It appears, but nothing plays</b></summary>
 
-- Run `anbled-screen logs` and look for `refused an address`. That means the link didn't come from the casting
-  phone itself, which can happen behind some VPNs. Turn off the VPN on the phone.
-- Check that VLC starts on its own: `vlc` or `flatpak run org.videolan.VLC`.
-- For details, set `ANBLED_SCREEN_LOG=/tmp/anbled-vlc.log` (see [Configuration](#configuration)) and cast again.
+- Check the log and look for `refused an address`. On Linux run `anbled-screen logs`; on Windows open
+  `%APPDATA%\Anbled Screen\anbled-screen.log`. That message means the link didn't come from the casting phone
+  itself, which can happen behind some VPNs. Turn off the VPN on the phone.
+- Check that VLC starts on its own.
+- For details, set `ANBLED_SCREEN_LOG` to a file path (see [Configuration](#configuration)) and cast again.
 
 </details>
 
 <details>
-<summary><b>Sound plays, but no window shows</b></summary>
+<summary><b>Linux: sound plays, but no window shows</b></summary>
 
 The background service needs your desktop's display settings. Running `anbled-screen` from your session passes
 them on. If it was started some other way, run `anbled-screen` again from the applications menu.
@@ -256,10 +299,19 @@ them on. If it was started some other way, run `anbled-screen` again from the ap
 </details>
 
 <details>
-<summary><b>Two screens with the same name show up</b></summary>
+<summary><b>Linux: two screens with the same name show up</b></summary>
 
 Another DLNA receiver (such as Rygel, GNOME's media sharing) is running. `anbled-screen` stops Rygel when it starts.
 To turn it off for good, go to **Settings → Sharing → Media Sharing** and switch it off.
+
+</details>
+
+<details>
+<summary><b>Windows: "running scripts is disabled on this system"</b></summary>
+
+That happens when running `install.ps1` from a clone. Run it like this instead:
+`powershell -ExecutionPolicy Bypass -File .\windows\install.ps1`. The one-line `irm … | iex` install isn't
+affected.
 
 </details>
 
@@ -267,23 +319,31 @@ To turn it off for good, go to **Settings → Sharing → Media Sharing** and sw
 
 ```
 anbled-screen/
-├── anbled_screen.py        # The receiver: SSDP, UPnP description, AVTransport control, VLC
-├── anbled-screen           # The command: on/off, status, logs, autostart, firewall
-├── anbled-screen.service   # systemd user service
+├── anbled_screen.py        # The receiver (Linux and Windows): SSDP, UPnP, AVTransport control, VLC
+├── anbled-screen           # Linux command: on/off, status, logs, autostart, firewall
+├── anbled-screen.service   # Linux systemd user service
 ├── anbled-screen.png       # Icon
-└── install.sh              # Installer and uninstaller (works from a clone or via curl)
+├── install.sh              # Linux installer and uninstaller (works from a clone or via curl)
+├── windows/
+│   ├── install.ps1         # Windows installer and uninstaller (works from a clone or via irm | iex)
+│   └── anbled-screen.ico   # Windows icon
+└── tests/
+    ├── smoke_test.py       # The app's cast flow against a stand-in VLC (Linux and Windows)
+    └── cast_test.py        # A real cast with VLC, end to end
 ```
 
 ## Contributing
 
 Bug reports and pull requests are welcome. When you change the receiver:
 
-- Keep it **standard library only**, so it runs on any distribution's Python with nothing extra to install.
+- Keep it **standard library only**, so it runs on any Python with nothing extra to install.
+- Run `python -I tests/smoke_test.py`. GitHub Actions runs it on Linux and Windows, plus a full Windows install
+  and a real cast with VLC.
 - Test with the Anbled app on a real phone on the same network.
 - Never relax the checks described in [Security](#security).
 
 ---
 
 <div align="center">
-<sub>Part of <a href="https://anbled.com">Anbled</a>. Cast from your phone to your Linux computer.</sub>
+<sub>Part of <a href="https://anbled.com">Anbled</a>. Cast from your phone to your computer.</sub>
 </div>
