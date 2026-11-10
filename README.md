@@ -7,7 +7,7 @@
 **Cast songs and videos from the Anbled app to your Linux computer.**
 
 Anbled Screen makes your Linux computer a cast receiver. It shows up in the Anbled app's **Cast** list just like a
-smart TV. Videos play full screen and songs play through your speakers.
+smart TV. What you cast opens in a real player window, with the cover, title and controls, on your bigger screen.
 
 [![Platform](https://img.shields.io/badge/platform-Linux-1a73e8?logo=linux&logoColor=white)](#requirements)
 [![Python](https://img.shields.io/badge/python-3.9%2B-1a73e8?logo=python&logoColor=white)](#requirements)
@@ -28,12 +28,14 @@ smart TV. Videos play full screen and songs play through your speakers.
 
 The [Anbled](https://anbled.com) Android app can cast to Chromecast devices and smart TVs. Anbled Screen adds
 your Linux computer to that list. Pick it in the app, and what you're playing moves to the computer. Your phone
-stays the remote control for play, pause, seek, volume and skipping songs.
+stays the remote control for play, pause, seek, volume and skipping songs, and the computer gets a full player
+window with the same controls.
 
 | | |
 |---|---|
-| 🎬 **Videos full screen** | Music videos open full screen and on top of other windows. |
-| 🎵 **Songs on your speakers** | Audio plays through the computer's default output. |
+| 🖥️ **A real player window** | Resize it, move it, go full screen and back, or close it. Play, pause, seek and volume work on the computer too. |
+| 🎵 **Songs with their cover** | Songs show their cover, title and artist. Videos play in the same window. |
+| 🔄 **Phone and computer in sync** | Whatever you do on one shows on the other. Closing the window pauses, and Play on the phone reopens it where you left off. |
 | 📡 **Found automatically** | No addresses or pairing codes. Phones on the same Wi-Fi find it on their own. |
 | 🪶 **Lightweight** | One Python file, standard library only, playback by [VLC](https://www.videolan.org/vlc/). |
 | 🔒 **Local only** | Only phones on your home network can control it, and it plays only what the casting phone itself serves. |
@@ -163,7 +165,7 @@ sequenceDiagram
     P->>S: GET /description.xml
     P->>S: SetAVTransportURI (the phone's own link)
     P->>S: Play
-    S->>V: Start VLC with that link (full screen for video)
+    S->>V: Open it in the player window (cover, title, artist)
     V->>P: Streams the song or video from the phone
     loop While playing
         P->>S: GetPositionInfo / Pause / Seek / SetVolume
@@ -173,10 +175,14 @@ sequenceDiagram
 
 1. **Discovery.** The receiver answers SSDP searches and announces itself on the network every minute, so the app
    lists it within a second or two.
-2. **Casting.** The phone sends a link to a small web server running on the phone. Anbled Screen starts a fresh,
-   hidden VLC with that link: full screen for videos, audio only for songs.
+2. **Casting.** The phone sends a link to a small web server running on the phone, with the song's title, artist
+   and cover. Anbled Screen opens it in a VLC player window. The first song opens the window, and later songs play
+   in the same one. Your choice of full screen or windowed is kept from one video to the next.
 3. **Control.** Play, pause, seek and volume from the phone are passed to VLC through its web interface. That
-   interface listens only on `127.0.0.1` and uses a new random password for every song.
+   interface listens only on `127.0.0.1` and uses a new random password each time the window opens. The phone asks
+   every second what the window is doing, so pausing or seeking on the computer shows on the phone too.
+4. **Closing the window** in the middle of a song counts as a pause, so the phone doesn't skip to the next song.
+   Press Play on the phone and the window opens again where it was.
 
 ## Security
 
@@ -191,6 +197,9 @@ Anbled Screen is designed to be safe to leave running on a home network:
   what's playing get an empty answer.
 - **No root, no system changes.** It runs as your user. The only system change is the optional firewall opening.
 - **Limited input.** Control requests larger than 256 KB are refused.
+- **Covers from known places only.** Song pictures are downloaded only over https from Anbled's image hosts, as
+  images of at most 5 MB, with no redirects.
+- **Nothing in VLC's history.** Cast links aren't added to VLC's recently played list.
 
 Found a security problem? Please report it privately to the maintainer rather than in a public issue.
 
@@ -239,7 +248,7 @@ sudo ufw allow 49494/tcp
 </details>
 
 <details>
-<summary><b>Sound plays, but the video window doesn't show</b></summary>
+<summary><b>Sound plays, but no window shows</b></summary>
 
 The background service needs your desktop's display settings. Running `anbled-screen` from your session passes
 them on. If it was started some other way, run `anbled-screen` again from the applications menu.

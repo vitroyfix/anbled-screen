@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Anbled Screen: makes a Linux computer a screen the Anbled app can cast to, with videos full screen.
+Anbled Screen: a cast receiver. Makes a Linux computer a screen the Anbled app can cast songs and videos to.
 
 To the app it is a smart TV: a UPnP / DLNA media renderer, found on the Wi-Fi with an SSDP search and told what to
 play over AVTransport (the app's cast/Dlna.kt). What it's told to play goes to VLC (the Flatpak org.videolan.VLC, or
-a vlc on the PATH), started once, hidden, and driven through its local web interface: videos open full screen, songs
-play through the speakers. Nothing on this computer is shared: it only plays what a phone on the same Wi-Fi sends.
+a vlc on the PATH) in a normal player window, with the song's picture, title and artist: it can be resized, put full
+screen, paused, seeked or closed from the computer as well as from the phone. Nothing on this computer is shared: it
+only plays what a phone on the same Wi-Fi sends.
 
     python3 anbled_screen.py            run in the foreground (Ctrl+C stops it)
     ANBLED_SCREEN_NAME="Living room"    the name phones show (default "Anbled screen (Linux)")
@@ -17,6 +18,7 @@ import html
 import ipaddress
 import json
 import os
+import pathlib
 import re
 import secrets
 import shutil
@@ -37,6 +39,9 @@ HTTP_PORT = int(os.environ.get("ANBLED_SCREEN_PORT", "49494"))
 VLC_PORT = 49495
 DEBUG_LOG = os.environ.get("ANBLED_SCREEN_LOG", "")  # a file: VLC's own messages go there (for finding problems)
 SSDP_ADDR, SSDP_PORT = "239.255.255.250", 1900
+CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "anbled-screen")
+# Where song pictures may come from (Anbled's covers are on Google's image servers).
+COVER_HOSTS = ("googleusercontent.com", "ggpht.com", "ytimg.com", "anbled.com")
 STATE_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "anbled-screen")
 
 DEVICE = "urn:schemas-upnp-org:device:MediaRenderer:1"
@@ -92,21 +97,23 @@ def vlc_command():
 
 class Vlc:
     """
-    One VLC per song, started with the song's address (so it plays at once, full screen for a video) and driven
-    through its web interface on 127.0.0.1 with a password made new each time. A VLC kept running and handed song
-    after song through its playlist kept ending up stopped after a song change, so each song gets a fresh one.
+    VLC with its own window and controls: resize it, close it, go full screen, pause or seek from the computer as
+    well as from the phone. It stays open from song to song (each one is handed over through its local web interface
+    on 127.0.0.1, with a password made new each time it starts).
     """
 
-    def __init__(self, uri, volume):
+    def __init__(self, playlist, volume, fullscreen):
         self.password = secrets.token_urlsafe(16)
         auth = base64.b64encode(f":{self.password}".encode()).decode()
         self.headers = {"Authorization": f"Basic {auth}"}
         self.volume = volume
         self.proc = subprocess.Popen(
-            vlc_command() + ["--intf", "dummy", "--extraintf", "http", "--http-host", "127.0.0.1", "--http-port", str(VLC_PORT),
-                             "--http-password", self.password, "--fullscreen", "--video-on-top", "--no-video-title-show",
-                             "--no-qt-privacy-ask", "--play-and-exit", "--network-caching", "1500"]
-            + (["-vv"] if DEBUG_LOG else []) + ["--", uri],  # "--": the address is never read as an option
+            vlc_command() + ["--intf", "qt", "--extraintf", "http", "--http-host", "127.0.0.1", "--http-port", str(VLC_PORT),
+                             "--http-password", self.password, "--no-one-instance", "--no-qt-privacy-ask",
+                             "--qt-continue", "0", "--no-qt-recentplay", "--no-qt-video-autoresize", "--qt-auto-raise", "3",
+                             "--no-loop", "--no-repeat", "--no-random", "--no-play-and-exit", "--no-play-and-stop",
+                             "--fullscreen" if fullscreen else "--no-fullscreen", "--network-caching", "1500"]
+            + (["-vv"] if DEBUG_LOG else []) + ["--", playlist],  # a file this program wrote, never a network address
             stdin=subprocess.DEVNULL, stdout=open(DEBUG_LOG, "ab") if DEBUG_LOG else subprocess.DEVNULL,
             stderr=subprocess.STDOUT if DEBUG_LOG else subprocess.DEVNULL, start_new_session=True)
         self.volume_set = False
@@ -129,6 +136,11 @@ class Vlc:
             self.status(command="volume", val=str(round(self.volume * 2.56)))
         return st
 
+    def open(self, playlist):
+        """The next song, in the same window."""
+        self.status(command="pl_empty")
+        self.status(command="in_play", input=pathlib.Path(playlist).as_uri())
+
     def close(self):
         if self.alive():
             try:
@@ -141,56 +153,199 @@ class Vlc:
                     pass
 
 
+# ---------- the song's picture ----------
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+_fetch = urllib.request.build_opener(_NoRedirect)
+
+
+def fetch_cover(url, dest_base):
+    """The song's picture, saved next to its playlist: only https from the places Anbled's pictures come from, an
+    image, at most 5 MB, no redirects. None when there isn't one."""
+    try:
+        u = urllib.parse.urlsplit(url)
+    except ValueError:
+        return None
+    host = (u.hostname or "").lower()
+    if u.scheme != "https" or not any(host == h or host.endswith("." + h) for h in COVER_HOSTS):
+        return None
+    try:
+        with _fetch.open(urllib.request.Request(url, headers={"User-Agent": "AnbledScreen/1"}), timeout=4) as r:
+            kind = r.headers.get_content_type()
+            if not kind.startswith("image/"):
+                return None
+            data = r.read(5_000_001)
+    except Exception:
+        return None
+    if len(data) > 5_000_000:
+        return None
+    path = dest_base + {"image/png": ".png", "image/webp": ".webp"}.get(kind, ".jpg")
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
+def write_playlist(path, uri, title, artist, cover, start):
+    """A one-song playlist: how VLC is given the song's title, artist and picture along with its address."""
+    esc = html.escape
+    image = f"<image>{esc(pathlib.Path(cover).as_uri())}</image>" if cover else ""
+    option = f"<vlc:option>start-time={start:.1f}</vlc:option>" if start else ""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n<playlist version="1" xmlns="http://xspf.org/ns/0/" '
+                'xmlns:vlc="http://www.videolan.org/vlc/playlist/ns/0/"><title>Anbled</title><trackList><track>'
+                f"<location>{esc(uri)}</location><title>{esc(title or 'Anbled')}</title><creator>{esc(artist)}</creator>"
+                f'{image}<extension application="http://www.videolan.org/vlc/playlist/0"><vlc:id>0</vlc:id>{option}'
+                "</extension></track></trackList></playlist>\n")
+
+
 # ---------- what's playing ----------
 class Player:
+    """
+    What the phone cast, and what the window on this computer is doing with it. Closing the window, or pressing Stop
+    on the computer, in the middle of a song counts as a pause (the phone would otherwise take it for the end of the
+    song and send the next one); Play on the phone opens it again where it was.
+    """
+
     def __init__(self):
-        self.lock = threading.Lock()
-        self.vlc = None            # the VLC playing the current song (None: nothing started yet / stopped)
+        self.lock = threading.RLock()
+        self.vlc = None            # the window (None: not opened yet, or closed)
         self.uri = ""
         self.owner = ""            # the phone that said what to play: only it is told the address back
         self.meta = ""
-        self.title = ""
+        self.title = self.artist = ""
+        self.video = False
+        self.cover = None          # the song's picture: (event set once fetched, [path or None])
+        self.loaded = ""           # the address the window has open
         self.starting_until = 0.0  # just asked to play: TRANSITIONING until VLC answers
         self.volume = 100
+        self.last = {}             # VLC's latest answer (state, time, length, fullscreen, volume)
+        self.resume_at = None      # paused by closing the window / Stop on the computer: where to carry on from
+        self.phone_stopped = False
+        self.fullscreen = False    # the last video's full screen choice, kept for the next video
+        self.count = 0
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        threading.Thread(target=self._watch, daemon=True).start()
 
-    def set_uri(self, uri, meta, owner):
+    # -- following the window --
+    def _watch(self):
+        while True:
+            time.sleep(0.5)
+            try:
+                self.refresh()
+            except Exception as e:
+                log(f"watching the window: {e}")
+
+    def refresh(self):
+        """Asks VLC what it's doing, and notices the window closed or stopped from this computer."""
         with self.lock:
-            self._close()
+            vlc = self.vlc
+            if vlc is None:
+                return
+            st = vlc.status() if vlc.alive() else None
+            before = self.last
+            mid_song = (before.get("state") in ("playing", "paused") and (before.get("length") or 0) > 0
+                        and (before.get("time") or 0) < before["length"] - 3)
+            if not vlc.alive():
+                self.vlc = None
+                self.loaded = ""
+                if mid_song and not self.phone_stopped:
+                    self.resume_at = before.get("time") or 0
+                    log("window closed: paused")
+                self.last = {}
+                return
+            if st is None:
+                return
+            if st.get("state") == "stopped" and mid_song and not self.phone_stopped and self.loaded == self.uri:
+                self.resume_at = before.get("time") or 0
+                log("stopped on this computer: paused")
+            if self.video and st.get("state") == "playing":
+                self.fullscreen = bool(st.get("fullscreen"))
+            self.last = st
+
+    # -- what the phone asks --
+    def set_uri(self, uri, meta, owner):
+        text = html.unescape(meta or "")
+
+        def field(name):
+            m = re.search(rf"<{name}(?:\s[^>]*)?>(.*?)</{name}>", text, re.S)
+            return html.unescape(m.group(1)).strip() if m else ""
+
+        with self.lock:
             self.uri, self.meta, self.owner = uri, meta, owner
-            title = re.search(r"<dc:title>(.*?)</dc:title>", html.unescape(meta or ""), re.S)
-            self.title = html.unescape(title.group(1)) if title else ""
+            self.title, self.artist = field("dc:title"), field("upnp:artist")
+            kind = field("upnp:class")
+            self.video = "videoItem" in kind if kind else urllib.parse.urlsplit(uri).path.endswith(".mp4")
+            self.resume_at = None
+            self.count += 1
+            base = os.path.join(CACHE_DIR, f"now-{self.count}")
+            for old in os.listdir(CACHE_DIR):  # earlier songs' playlists and pictures
+                if not old.startswith(f"now-{self.count}-"):
+                    try:
+                        os.remove(os.path.join(CACHE_DIR, old))
+                    except OSError:
+                        pass
+            done, box = threading.Event(), [None]
+            self.cover = (done, box)
+            art = field("upnp:albumArtURI")
+
+            def get():
+                try:
+                    box[0] = fetch_cover(art, base + "-cover") if art else None
+                finally:
+                    done.set()
+            threading.Thread(target=get, daemon=True).start()
         log(f"next: {self.title or self.uri}")
 
     def play(self):
+        cover = self.cover
+        if cover:
+            cover[0].wait(2)  # the picture, if it comes quickly; the song doesn't wait longer for it
         with self.lock:
             if not self.uri:
                 return False
-            st = self.vlc.status() if self.vlc else None
-            if st and st.get("state") == "paused":
-                self.vlc.status(command="pl_forceresume")
-            elif not (self.vlc and self.vlc.alive()):
-                self.vlc = Vlc(self.uri, self.volume)
-                self.starting_until = time.time() + 20
-                log(f"playing: {self.title or self.uri}")
+            self.phone_stopped = False
+            alive = self.vlc is not None and self.vlc.alive()
+            state = self.last.get("state")
+            if alive and self.loaded == self.uri and self.resume_at is None:
+                if state == "paused":
+                    self.vlc.status(command="pl_forceresume")
+                    return True
+                if state == "playing":
+                    return True
+            start = self.resume_at or 0
+            path = os.path.join(CACHE_DIR, f"now-{self.count}-{int(time.time() * 1000)}.xspf")
+            write_playlist(path, self.uri, self.title, self.artist, cover[1][0] if cover else None, start)
+            if alive:
+                self.vlc.open(path)
+            else:
+                self.vlc = Vlc(path, self.volume, self.video and self.fullscreen)
+            self.loaded, self.resume_at, self.last = self.uri, None, {}
+            self.starting_until = time.time() + 20
+            log(f"playing: {self.title or self.uri}" + (f" from {hms(start)}" if start else ""))
             return True
 
     def pause(self):
-        if self.vlc:
-            self.vlc.status(command="pl_forcepause")
+        with self.lock:
+            if self.vlc and self.loaded == self.uri:
+                self.vlc.status(command="pl_forcepause")
 
     def stop(self):
         with self.lock:
-            self._close()
-
-    def _close(self):
-        if self.vlc:
-            self.vlc.close()
-            self.vlc = None
-        self.starting_until = 0
+            self.phone_stopped = True
+            self.resume_at = None
+            self.starting_until = 0
+            if self.vlc:
+                self.vlc.status(command="pl_stop")  # the window stays open
 
     def seek(self, seconds):
-        if self.vlc:
-            self.vlc.status(command="seek", val=str(int(seconds)))
+        with self.lock:
+            if self.vlc and self.loaded == self.uri and self.resume_at is None:
+                self.vlc.status(command="seek", val=str(int(seconds)))
+            elif self.resume_at is not None:
+                self.resume_at = max(0, seconds)
 
     def set_volume(self, v):
         self.volume = max(0, min(100, v))
@@ -198,22 +353,32 @@ class Player:
             self.vlc.volume = self.volume
             self.vlc.status(command="volume", val=str(round(self.volume * 2.56)))
 
+    def current_volume(self):
+        v = self.last.get("volume")
+        return max(0, min(100, round(v / 2.56))) if isinstance(v, (int, float)) else self.volume
+
     def state(self):
-        vlc = self.vlc
-        st = (vlc.status() if vlc else None) or {}
-        vlc_state = st.get("state")
-        if vlc_state == "playing":
-            self.starting_until = 0
-            return "PLAYING", st
-        if vlc_state == "paused":
-            return "PAUSED_PLAYBACK", st
-        if vlc and vlc.alive() and time.time() < self.starting_until:
-            return "TRANSITIONING", st  # VLC is still starting or opening the song
-        return ("STOPPED" if self.uri else "NO_MEDIA_PRESENT"), st
+        self.refresh()
+        with self.lock:
+            st = dict(self.last)
+            if self.resume_at is not None:
+                return "PAUSED_PLAYBACK", {"time": self.resume_at, "length": st.get("length") or 0}
+            alive = self.vlc is not None and self.vlc.alive() and self.loaded == self.uri
+            vlc_state = st.get("state") if alive else None
+            if vlc_state == "playing":
+                self.starting_until = 0
+                return "PLAYING", st
+            if vlc_state == "paused":
+                return "PAUSED_PLAYBACK", st
+            if alive and time.time() < self.starting_until:
+                return "TRANSITIONING", st  # VLC is still starting or opening the song
+            return ("STOPPED" if self.uri else "NO_MEDIA_PRESENT"), st
 
     def close(self):
         with self.lock:
-            self._close()
+            if self.vlc:
+                self.vlc.close()
+                self.vlc = None
 
 
 def hms(seconds):
@@ -419,14 +584,14 @@ class Handler(BaseHTTPRequestHandler):
 
     # RenderingControl
     def RenderingControl_GetVolume(self, body):
-        return {"CurrentVolume": self.player.volume}
+        return {"CurrentVolume": self.player.current_volume()}
 
     def RenderingControl_SetVolume(self, body):
         self.player.set_volume(int(arg(body, "DesiredVolume") or 100))
         return {}
 
     def RenderingControl_GetMute(self, body):
-        return {"CurrentMute": 1 if self.player.volume == 0 else 0}
+        return {"CurrentMute": 1 if self.player.current_volume() == 0 else 0}
 
     def RenderingControl_SetMute(self, body):
         if arg(body, "DesiredMute") in ("1", "true"):
@@ -533,7 +698,7 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
     finder = threading.Thread(target=ssdp, args=(ip, stop), daemon=True)
     finder.start()
-    log(f'"{NAME}" is ready on {ip}: cast to it from Anbled (same Wi-Fi). Videos play full screen.')
+    log(f'"{NAME}" is ready on {ip}: cast to it from Anbled (same Wi-Fi). Songs and videos open in a player window.')
     try:
         httpd.serve_forever()
     finally:
